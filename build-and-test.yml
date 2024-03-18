@@ -1,0 +1,693 @@
+name: Build and Test, Run Sonar
+
+# Controls when the action will run. Workflow runs when manually triggered using the UI
+# or API.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - develop
+    tags:
+      - 'shell-complete-*.*.*'
+
+  pull_request:
+    branches:
+      - master
+      - develop
+
+env:
+  NODE_VERSION: '20.x'
+  SONAR_NODE_VERSION: '18.x'
+  SONAR_ACCEPTANCE_NODE_VERSION: '18.x'
+  PYTHON_VERSION: '3.9'
+  DEV_HOSTNAME: localhost
+  DEV_PORT: 3000
+  MODE: production
+
+jobs:
+  amidala-playwright-tests:
+    name: Playwright tests for Amidala
+
+    runs-on: OneShell
+    container:
+      image: mcr.microsoft.com/playwright:v1.42.1-jammy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache local Yarn repository
+        uses: actions/cache@v3
+        id: yarn-cache # use this to check for `cache-hit` (`steps.yarn-cache.outputs.cache-hit != 'true'`)
+        with:
+          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Install dependencies
+        run: |
+          cd shell-amidala-frontend && yarn install
+
+      - name: Run Playwright tests
+        run: |
+          cd shell-amidala-frontend && yarn test buildtime
+        env:
+          TEST_BROWSERS: chrome
+          TEST_CONCURRENCY: 4
+          TEST_TIMEOUT: 30000
+
+      - name: Upload screenshots
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: amidala-playwright-screenshots
+          path: shell-amidala-frontend/target/playwright/screenshots/**
+          retention-days: 7
+
+      - name: Upload xUnit results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: amidala-playwright-xunit-file
+          path: shell-amidala-frontend/target/playwright/junit-report.xml
+          retention-days: 7
+
+      - name: Upload LCOV Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: amidala-playwright-lcov-report
+          path: shell-amidala-frontend/target/playwright/coverage/lcov-report/**
+          retention-days: 7
+
+      - name: Fix LCOV file
+        run: sed -i 's|SF:/.*/oneshell-complete/shell-amidala-frontend/|SF:|g' shell-amidala-frontend/target/playwright/coverage/lcov.info
+
+      - name: Upload LCOV file
+        uses: actions/upload-artifact@v3
+        with:
+          name: amidala-playwright-lcov-file
+          path: shell-amidala-frontend/target/playwright/coverage/lcov.info
+          retention-days: 7
+
+  rio-codecept-tests:
+    name: Codecept tests for RIO
+
+    runs-on: OneShell
+    container:
+      image: ghcr.io/sede-x/oneshell-complete/rio-base:1.3.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache local Yarn repository
+        uses: actions/cache@v3
+        id: yarn-cache # use this to check for `cache-hit` (`steps.yarn-cache.outputs.cache-hit != 'true'`)
+        with:
+          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Install dependencies
+        run: |
+          cd shell-rio-frontend && yarn install
+
+      - name: Run local Codecept checks
+        run: |
+          cd shell-rio-frontend && yarn build-and-test:puppeteer
+
+      - name: Upload screenshots
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: rio-codecept-screenshots
+          path: |
+            shell-rio-frontend/target/codeceptjs/diff/**
+            shell-rio-frontend/target/codeceptjs/*.png
+          retention-days: 7
+
+      - name: Upload xUnit results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: rio-codecept-xunit-file
+          path: shell-rio-frontend/target/codeceptjs/junit-reports/report.xml
+          retention-days: 7
+
+      - name: Upload Mochawesome Report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: rio-codecept-mochawesome-report
+          path: shell-rio-frontend/target/codeceptjs/mochawesome/**
+          retention-days: 7
+
+      - name: Upload LCOV Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: rio-codecept-lcov-report
+          path: shell-rio-frontend/target/coverage/lcov-report/**
+          retention-days: 7
+
+      - name: Fix LCOV file
+        run: sed -i 's|SF:/.*/oneshell-complete/shell-rio-frontend/|SF:|g' shell-rio-frontend/target/coverage/lcov.info
+
+      - name: Upload LCOV file
+        uses: actions/upload-artifact@v3
+        with:
+          name: rio-codecept-lcov-file
+          path: shell-rio-frontend/target/coverage/lcov.info
+          retention-days: 7
+
+  main-build:
+    name: Main build, test, deployment
+
+    runs-on: OneShell
+
+    # Dependency Submission API requires the write permission
+    permissions:
+      packages: write
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Use Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache local Yarn repository
+        uses: actions/cache@v3
+        id: yarn-cache # use this to check for `cache-hit` (`steps.yarn-cache.outputs.cache-hit != 'true'`)
+        with:
+          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Cache local Maven repository
+        uses: actions/cache@v3
+        id: maven-cache
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Cache local Python (pip) Packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Use Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Pre-install Python dependencies via PIP
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Pre-install node-based tools (main)
+        run: yarn install
+
+      - name: Pre-install node-based tools (amidala)
+        run: cd shell-amidala-frontend && yarn install
+
+      - name: Pre-install node-based tools (reports)
+        run: cd shell-reports-frontend && yarn install
+
+      - name: Pre-install node-based tools (rio)
+        run: cd shell-rio-frontend && yarn install
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '11'
+
+      - name: Resolve Maven plugins
+        run: mvn -B dependency:resolve-plugins -U
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve Dependencies
+        run: mvn -B de.qaware.maven:go-offline-maven-plugin:resolve-dependencies -U
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean previous builds (if any)
+        run: mvn -B clean:clean -T8 -Dmaven.clean.failOnError=false
+
+      - name: Build, package (non-tag)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: mvn -B package -U -DskipTests=true -T8 -DforkCount=2 -DreuseForks=true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build, package (tag)
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: mvn -B package -U -DskipTests=true -T8 -DforkCount=2 -DreuseForks=true -Drevision="${GITHUB_REF:25}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Maven Dependency Tree Dependency Submission
+        uses: advanced-security/maven-dependency-submission-action@v3.0.2
+
+      - name: Run unit tests (non-tag)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          mvn -B verify -Pcoverage -Dmaven.test.failure.ignore=true -T8 -DforkCount=2 -DreuseForks=true
+          mkdir -p target
+          yarn junit-report-merger target/main-report.xml */target/surefire-reports/*.xml
+          cat target/main-report.xml |python -c "from lxml.etree import parse; from sys import stdin,exit; exit(any(filter(lambda x: x != '0', parse(stdin).xpath('//testsuites/@errors | //testsuites/@failures'))))"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run unit tests (tag)
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          mvn -B verify -Pcoverage -Dmaven.test.failure.ignore=true -T8 -DforkCount=2 -DreuseForks=true -Drevision="${GITHUB_REF:25}"
+          mkdir -p target
+          yarn junit-report-merger target/main-report.xml */target/surefire-reports/*.xml
+          cat target/main-report.xml | python -c "from lxml.etree import parse; from sys import stdin,exit; exit(any(filter(lambda x: x != '0', parse(stdin).xpath('//testsuites/@errors | //testsuites/@failures'))))"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: main-build-xunit-file
+          path: target/main-report.xml
+          retention-days: 7
+
+      - name: Deploy to Github Packages (default branch)
+        if: ${{ github.ref == 'refs/heads/develop' }}
+        run: mvn -B deploy -DskipTests=true -DforkCount=0.25C -DreuseForks=true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+
+      - name: Deploy to Github Packages (tag)
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: mvn -B deploy -DskipTests=true -DforkCount=0.25C -DreuseForks=true -Drevision="${GITHUB_REF:25}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload the release artifact to the current release
+        uses: softprops/action-gh-release@v1
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        with:
+          files: shell-complete-all/target/*.zip
+
+      - name: Copy complete package
+        run: |
+          cp shell-complete-all/target/*.zip shell-complete-all.zip
+
+      - name: Cache Local Shell code package repository
+        uses: actions/upload-artifact@v3
+        with:
+          name: shell-complete-all
+          path: shell-complete-all.zip
+          retention-days: 1
+
+      - name: Archive Amidala Build
+        run: tar -cf ../amidala-dist.tar ./
+        working-directory: shell-amidala-frontend/target/dist
+
+      - name: Upload Amidala build
+        uses: actions/upload-artifact@v3
+        with:
+          name: main-build-amidala-dist
+          path: shell-amidala-frontend/target/amidala-dist.tar
+          retention-days: 7
+
+      - name: Archive build results (for Sonar)
+        run: tar -czf build-results.tar.gz */target/maven-status */target/classes */target/test-classes */target/generated-sources */target/generated-test-sources */target/surefire-reports */target/site/jacoco */target/jacoco.exec
+
+      - name: Upload build results
+        uses: actions/upload-artifact@v3
+        with:
+          name: main-build-results
+          path: build-results.tar.gz
+          retention-days: 1
+
+  upload-test-results:
+    name: Decorate with unit test results
+
+    runs-on: ubuntu-latest
+
+    needs: [rio-codecept-tests, amidala-playwright-tests, main-build]
+    if: ${{ success() || failure() }}
+
+    steps:
+      - name: Use Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download main test results
+        uses: actions/download-artifact@v3
+        with:
+          name: main-build-xunit-file
+          path: artifacts/main
+
+      - name: Download Amidala test results
+        uses: actions/download-artifact@v3
+        with:
+          name: amidala-playwright-xunit-file
+          path: artifacts/playwright
+
+      - name: Download RIO test results
+        uses: actions/download-artifact@v3
+        with:
+          name: rio-codecept-xunit-file
+          path: artifacts/rio
+
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          junit_files: 'artifacts/**/*.xml'
+
+  enterprise-sonar:
+    name: Scan via Enterprise Sonar
+
+    runs-on: OneShell
+
+    needs: [rio-codecept-tests, amidala-playwright-tests, main-build]
+
+    steps:
+      - name: Checkout (normal)
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Cache local Maven repository
+        uses: actions/cache@v3
+        id: maven-cache
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Cache SonarCloud package
+        uses: actions/cache@v3
+        id: sonar-cache
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Use Node.js ${{ env.SONAR_NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.SONAR_NODE_VERSION }}
+
+      - name: Setup Java # Sonar 10.3+ will require Java 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Download Amidala LCOV file
+        uses: actions/download-artifact@v3
+        with:
+          name: amidala-playwright-lcov-file
+          path: shell-amidala-frontend/target/playwright/coverage
+
+      - name: Download RIO Codecept LCOV file
+        uses: actions/download-artifact@v3
+        with:
+          name: rio-codecept-lcov-file
+          path: shell-rio-frontend/target/coverage
+
+      - name: Download main build test results
+        uses: actions/download-artifact@v3
+        with:
+          name: main-build-results
+          path: target/artifacts
+
+      - name: Unpack test results
+        run: tar -xzf target/artifacts/build-results.tar.gz
+
+      - name: Run Sonar scan
+        run: >
+          mvn -Psonar initialize sonar:sonar
+          -Dsonar.host.url="${SONAR_HOST}"
+          -Dsonar.token="${SONAR_TOKEN}"
+          -Dsonar.projectKey="${SONAR_PROJECT_KEY}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+          SONAR_PROJECT_KEY: com.shell.OneShellFunctionalRoadmap
+          SONAR_HOST: https://sesvc.shell.com/
+          SONAR_TOKEN: ${{ secrets.ENTERPRISE_SONAR_TOKEN }}
+
+  enterprise-sonar-acceptance:
+    name: Scan via Enterprise Sonar (Acceptance)
+
+    runs-on: OneShell
+
+    needs: [rio-codecept-tests, amidala-playwright-tests, main-build]
+
+    steps:
+      - name: Checkout (normal)
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Cache local Maven repository
+        uses: actions/cache@v3
+        id: maven-cache
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Cache SonarCloud package
+        uses: actions/cache@v3
+        id: sonar-cache
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Use Node.js ${{ env.SONAR_ACCEPTANCE_NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.SONAR_ACCEPTANCE_NODE_VERSION }}
+
+      - name: Setup Java # Sonar 10.3+ will require Java 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Download Amidala LCOV file
+        uses: actions/download-artifact@v3
+        with:
+          name: amidala-playwright-lcov-file
+          path: shell-amidala-frontend/target/playwright/coverage
+
+      - name: Download RIO Codecept LCOV file
+        uses: actions/download-artifact@v3
+        with:
+          name: rio-codecept-lcov-file
+          path: shell-rio-frontend/target/coverage
+
+      - name: Download main build test results
+        uses: actions/download-artifact@v3
+        with:
+          name: main-build-results
+          path: target/artifacts
+
+      - name: Unpack test results
+        run: tar -xzf target/artifacts/build-results.tar.gz
+
+      - name: Run Sonar scan
+        run: >
+          mvn -Psonar initialize sonar:sonar
+          -Dsonar.host.url="${SONAR_HOST}"
+          -Dsonar.token="${SONAR_TOKEN}"
+          -Dsonar.projectKey="${SONAR_PROJECT_KEY}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+          SONAR_PROJECT_KEY: com.shell.OneShellFunctionalRoadmap
+          SONAR_HOST: https://sesvc-acceptance.shell.com/
+          SONAR_TOKEN: ${{ secrets.ENTERPRISE_ACCEPTANCE_SONAR_TOKEN }}
+
+  amidala-playwright-runtime-tests:
+    name: Playwright runtime tests for Amidala
+    runs-on: OneShell
+    container:
+      image: mcr.microsoft.com/playwright:v1.42.1-jammy
+    timeout-minutes: 40
+    needs: [main-build]
+
+    services:
+      aem-author:
+        image: ghcr.io/sede-x/oneshell-complete/aem-author:6.5.19.0
+        ports:
+          - 4502:4502
+        options: >-
+          --health-cmd "curl -u $AEM_USER:$AEM_PASSWORD -f http://aem-author:4502/crx/packmgr/service.jsp || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        env:
+          AEM_LICENSE_PRODUCT_NAME: ${{ secrets.AEM_LICENSE_PRODUCT_NAME }}
+          AEM_LICENSE_CUSTOMER_NAME: ${{ secrets.AEM_LICENSE_CUSTOMER_NAME }}
+          AEM_LICENSE_PRODUCT_VERSION: ${{ secrets.AEM_LICENSE_PRODUCT_VERSION }}
+          AEM_LICENSE_DOWNLOAD_ID: ${{ secrets.AEM_LICENSE_DOWNLOAD_ID }}
+          AEM_PASSWORD: ${{ secrets.DOCKER_AEM_PASSWORD }}
+          AEM_USER: ${{ secrets.DOCKER_AEM_USER }}
+
+      aem-publish:
+        image: ghcr.io/sede-x/oneshell-complete/aem-publish:6.5.19.0
+        ports:
+          - 4503:4503
+        options: >-
+          --health-cmd "curl -u $AEM_USER:$AEM_PASSWORD -f http://aem-publish:4503/crx/packmgr/service.jsp || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        env:
+          AEM_LICENSE_PRODUCT_NAME: ${{ secrets.AEM_LICENSE_PRODUCT_NAME }}
+          AEM_LICENSE_CUSTOMER_NAME: ${{ secrets.AEM_LICENSE_CUSTOMER_NAME }}
+          AEM_LICENSE_PRODUCT_VERSION: ${{ secrets.AEM_LICENSE_PRODUCT_VERSION }}
+          AEM_LICENSE_DOWNLOAD_ID: ${{ secrets.AEM_LICENSE_DOWNLOAD_ID }}
+          AEM_PASSWORD: ${{ secrets.DOCKER_AEM_PASSWORD }}
+          AEM_USER: ${{ secrets.DOCKER_AEM_USER }}
+
+    steps:
+      - name: Download Shell code package
+        uses: actions/download-artifact@v3
+        with:
+          name: shell-complete-all
+
+      - name: Install JQ
+        shell: bash
+        run: |
+          apt-get update && apt-get -y install jq
+
+      - name: Wait for AEM author and publish to come up
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          while [[ "$(curl -s -u $AEM_USER:$AEM_PASSWORD http://aem-author:4502/systemalive | jq -r .systemStatus  2>/dev/null)" != "GREEN" ]]; do echo Waiting for server to start;sleep 5; done
+          while [[ "$(curl -s -u $AEM_USER:$AEM_PASSWORD http://aem-publish:4503/systemalive | jq -r .systemStatus  2>/dev/null)" != "GREEN" ]]; do echo Waiting for server to start;sleep 5; done
+
+      - name: Deploy to Author
+        shell: bash
+        run: |
+          curl -u $AEM_USER:$AEM_PASSWORD -F file=@shell-complete-all.zip  -F force=true -F install=true -F recursive=true http://aem-author:4502/crx/packmgr/service.jsp
+        env:
+          AEM_PASSWORD: ${{ secrets.DOCKER_AEM_PASSWORD }}
+          AEM_USER: ${{ secrets.DOCKER_AEM_USER }}
+
+      - name: Deploy to Publish
+        shell: bash
+        run: |
+          curl -u $AEM_USER:$AEM_PASSWORD -F file=@shell-complete-all.zip  -F force=true -F install=true -F recursive=true http://aem-publish:4503/crx/packmgr/service.jsp
+        env:
+          AEM_PASSWORD: ${{ secrets.DOCKER_AEM_PASSWORD }}
+          AEM_USER: ${{ secrets.DOCKER_AEM_USER }}
+
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Get yarn cache directory path
+        id: yarn-cache-dir-path
+        run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache local Yarn repository
+        uses: actions/cache@v3
+        id: yarn-cache # use this to check for `cache-hit` (`steps.yarn-cache.outputs.cache-hit != 'true'`)
+        with:
+          path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Install dependencies
+        run: |
+          cd shell-amidala-frontend && yarn install
+
+      - name: Wait for AEM author to be alive
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          while [[ "$(curl -s -u $AEM_USER:$AEM_PASSWORD http://aem-author:4502/systemalive | jq -r .systemStatus  2>/dev/null)" != "GREEN" ]]; do echo Waiting for server to start;sleep 5; done
+
+      - name: Wait for AEM publish to be alive
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          while [[ "$(curl -s -u $AEM_USER:$AEM_PASSWORD http://aem-publish:4503/systemalive | jq -r .systemStatus  2>/dev/null)" != "GREEN" ]]; do echo Waiting for server to start;sleep 5; done
+
+      - name: Execute health checks
+        shell: bash
+        id: shell-health-check
+        run: |
+          .github/workflows/scripts/execute-healthchecks.sh
+        env:
+          AUTHOR: http://aem-author:4502
+          PUBLISH: http://aem-publish:4503
+          ENVIRONMENT: local
+
+      - name: Print any healthcheck failures
+        if: failure() && steps.shell-health-check.outcome == 'failure'
+        run: |
+          curl -s http://aem-author:4502/bin/shell/healthcheck/oneshell.json
+          curl -s http://aem-publish:4503/bin/shell/healthcheck/oneshell.json
+
+      - name: Suppress AEM Author onboarding popups
+        shell: bash
+        run: |
+          prefUrl=`curl -s -u $AEM_USER:$AEM_PASSWORD http://aem-author:4502/editor.html/content/shell/demo/tethys/en_gb.html | grep "data-foundation-preference-action" | sed -nE 's/.*data-foundation-preference-action="(.*)".*/\1/p'`
+          curl -u $AEM_USER:$AEM_PASSWORD -d "cq.authoring.editor.page.showOnboarding62=false" -X POST http://aem-author:4502/$prefUrl
+        env:
+          AEM_PASSWORD: ${{ secrets.DOCKER_AEM_PASSWORD }}
+          AEM_USER: ${{ secrets.DOCKER_AEM_USER }}
+
+      - name: Run Playwright
+        run: |
+          cd shell-amidala-frontend && yarn test runtime
+        env:
+          environment_to_run_on: localhost
+          TEST_ENVIRONMENT_AUTHOR: http://aem-author:4502
+          TEST_ENVIRONMENT_PUBLISH: http://aem-publish:4503
+          TEST_ENVIRONMENT_USER: ${{ secrets.DOCKER_AEM_USER }}
+          TEST_ENVIRONMENT_PASS: ${{ secrets.DOCKER_AEM_PASSWORD }}
+          TEST_CONCURRENCY: 1
+          TEST_TIMEOUT: 80000
+
+      - name: Upload screenshots
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: amidala-playwright-runtime-screenshots
+          path: shell-amidala-frontend/target/playwright/screenshots/**
+          retention-days: 7
