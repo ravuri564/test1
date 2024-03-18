@@ -1,0 +1,17 @@
+Lighthouse Installation: Ensure that Lighthouse is installed and accessible in the CI/CD environment. This can be achieved by globally installing it via NPM.
+
+CI/CD Workflow Update: Introduce a new step in the CI/CD workflow to execute Lighthouse. This step should be positioned after the build process and prior to the deployment stages.
+
+Running Lighthouse Scans: Utilize the Lighthouse command-line tool to conduct scans, specifying the demo site front end environment as the scan target.
+
+Report Generation: The Lighthouse report should be generated against the Amidala nightly test, adhering to the standard Lighthouse checks. The report should be saved in JSON format.
+
+Report Storage: Preserve the report as an artifact within the CI/CD pipeline for convenient access. We plan to use GitHub Actions' upload-artifact feature for this purpose.
+
+Alternative Storage: We're considering creating a new storage account on Azure Cloud as an alternative location for storing the report.
+
+Workflow Execution: This workflow is designed to be executed as part of pull requests that target the demo site front end environment.
+
+Pre-Production Testing: Prior to production deployment, it's crucial to test these changes on the pre-production path (https://reg-preprod.shell.com/tethys.html).
+
+Validation Testing: Conduct an additional round of testing to confirm that Lighthouse scans are executed correctly and that reports are generated and stored as expected.
